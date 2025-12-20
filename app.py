@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 import io
+import os
 import arabic_reshaper
 from bidi.algorithm import get_display
 from reportlab.lib.pagesizes import A4, landscape
@@ -114,7 +115,6 @@ def df_to_pdf_table(df, title="Mevven"):
         data.append([Paragraph(fix_arabic("" if pd.isna(row[col]) else str(row[col])), styleN)
                      for col in df.columns])
 
-    # توزيع عرض الأعمدة (مجموع < عرض A4 Landscape ≈ 842pt)
     col_widths_cm = [2, 2, 1.5, 3, 2, 3, 1.5, 1.5, 2.5, 3.5, 1.5, 1.5, 1, 1.5]
     col_widths = [max(c * 28.35, 15) for c in col_widths_cm]
 
@@ -144,6 +144,14 @@ def df_to_pdf_table(df, title="Mevven"):
 st.set_page_config(page_title="💎 Mevven Orders Processor", layout="wide")
 st.title("💎 Mevven Orders Processor")
 st.markdown("....صباح الفل يا ام لي لي ... ارفعي الملفات علشان تستلمي الشيت")
+
+# ---------- تشغيل أغنية من assets ----------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SONG_PATH = os.path.join(BASE_DIR, "assets", "Nghmaty.CoM_Shafica.Gay.Beyshki.mp3")  # غيّر song.mp3 لاسم ملفك الحقيقي
+if os.path.exists(SONG_PATH):
+    st.audio(SONG_PATH, format="audio/mpeg", autoplay=True, loop=True)  # autoplay ممكن المتصفح يمنعه [web:138]
+else:
+    st.warning(f"ملف الأغنية غير موجود هنا: {SONG_PATH}")
 
 uploaded_files = st.file_uploader(
     "Upload Excel files (.xlsx)",
@@ -213,6 +221,3 @@ if uploaded_files:
             file_name=file_name,
             mime="application/pdf"
         )
-
-
-
