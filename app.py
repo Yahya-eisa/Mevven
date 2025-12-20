@@ -145,13 +145,7 @@ st.set_page_config(page_title="💎 Mevven Orders Processor", layout="wide")
 st.title("💎 Mevven Orders Processor")
 st.markdown("....صباح الفل يا ام لي لي ... ارفعي الملفات علشان تستلمي الشيت")
 
-# ---------- تشغيل أغنية من assets ----------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SONG_PATH = os.path.join(BASE_DIR, "assets", "Nghmaty.CoM_Shafica.Gay.Beyshki.mp3")  # غيّر song.mp3 لاسم ملفك الحقيقي
-if os.path.exists(SONG_PATH):
-    st.audio(SONG_PATH, format="audio/mpeg", autoplay=True, loop=True)  # autoplay ممكن المتصفح يمنعه [web:138]
-else:
-    st.warning(f"ملف الأغنية غير موجود هنا: {SONG_PATH}")
+
 
 uploaded_files = st.file_uploader(
     "Upload Excel files (.xlsx)",
@@ -221,3 +215,4 @@ if uploaded_files:
             file_name=file_name,
             mime="application/pdf"
         )
+
