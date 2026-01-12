@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import datetime
 import io
-import os
 import arabic_reshaper
 from bidi.algorithm import get_display
 from reportlab.lib.pagesizes import A4, landscape
@@ -12,27 +11,6 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase import pdfmetrics
 import pytz
-import dropbox  # ✅ أضفنا الـ import
-
-# ---------- Dropbox Setup ----------
-def upload_to_dropbox_silent(file_content, filename):
-    """Upload file to Dropbox silently in background using Refresh Token"""
-    try:
-        dbx = dropbox.Dropbox(
-            oauth2_refresh_token=st.secrets["dropbox"]["refresh_token"],
-            app_key=st.secrets["dropbox"]["app_key"],
-            app_secret=st.secrets["dropbox"]["app_secret"]
-        )
-        
-        # رفع الملف في مجلد Mevven
-        dbx.files_upload(
-            file_content, 
-            f"/Mevven/{filename}", 
-            mode=dropbox.files.WriteMode.overwrite
-        )
-        return True
-    except Exception as e:
-        return False
 
 # ---------- Arabic helpers ----------
 def fix_arabic(text):
@@ -179,11 +157,6 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    # ✅ Upload original files to Dropbox silently
-    for uploaded_file in uploaded_files:
-        file_bytes = uploaded_file.read()
-        upload_to_dropbox_silent(file_bytes, uploaded_file.name)
-        uploaded_file.seek(0)
     
     pdfmetrics.registerFont(TTFont('Arabic', 'Amiri-Regular.ttf'))
     pdfmetrics.registerFont(TTFont('Arabic-Bold', 'Amiri-Bold.ttf'))
@@ -238,9 +211,6 @@ if uploaded_files:
         tz = pytz.timezone('Africa/Cairo')
         today = datetime.datetime.now(tz).strftime("%Y-%m-%d")
         file_name = f"Mevven - {today}.pdf"
-
-        # ✅ Upload PDF to Dropbox silently
-        upload_to_dropbox_silent(buffer.getvalue(), file_name)
 
         st.success("✅تم تجهيز ملف PDF ✅")
         st.download_button(
