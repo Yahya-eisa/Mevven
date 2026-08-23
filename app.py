@@ -1,226 +1,701 @@
 import streamlit as st
 import pandas as pd
-import datetime
 import io
-import arabic_reshaper
-from bidi.algorithm import get_display
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase import pdfmetrics
-import pytz
+import re
 
-# ---------- Arabic helpers ----------
-def fix_arabic(text):
-    if pd.isna(text):
+
+# =========================================================
+# Helpers
+# =========================================================
+
+def extract_product_code(campaign_name):
+    """
+    استخراج كود المنتج من اسم الحملة.
+    مثال:
+    KW010102MKIO99 ايربودز لترجمة المحادثات 8-11
+    => KW010102MKIO99
+    """
+
+    if pd.isna(campaign_name):
+        return None
+
+    text = str(campaign_name)
+
+    # إزالة علامات الاتجاه المخفية
+    text = text.replace("\u200e", "").replace("\u200f", "").strip()
+
+    # الأكواد الموجودة في الشيتات تبدأ غالباً بـ KW
+    match = re.search(r'\bKW[A-Z0-9]+\b', text, re.IGNORECASE)
+
+    if match:
+        return match.group(0).upper()
+
+    return None
+
+
+def extract_product_name(campaign_name, product_code):
+    """
+    استخراج اسم المنتج من اسم الحملة بعد إزالة:
+    - الكلمات قبل الكود مثل Lead / Sales / CPA
+    - التاريخ الموجود في نهاية الحملة
+    - Copy
+    - BID
+    """
+
+    if pd.isna(campaign_name) or not product_code:
         return ""
-    reshaped = arabic_reshaper.reshape(str(text))
-    return get_display(reshaped)
 
-def fill_down(series):
-    return series.ffill()
+    text = str(campaign_name)
 
-def replace_muaaqal_with_confirm_safe(df):
-    return df.replace('معلق', 'تم التأكيد')
+    # إزالة علامات الاتجاه المخفية
+    text = text.replace("\u200e", "").replace("\u200f", "")
 
-def classify_city(city):
-    if pd.isna(city) or str(city).strip() == '':
-        return "Other City"
-    city = str(city).strip()
-    city_map = {
-        "منطقة صباح السالم": {"صباح السالم","العدان","المسيلة","أبو فطيرة","أبو الحصانية","مبارك الكبير",
-                              "القصور","القرين","الفنيطيس","المسايل"},
-        "منطقة المهبولة": {"الفنطاس","المهبولة"},
-        "منطقة الفحيحيل": {"الفحيحيل الصناعية","أبو حليفة","المنقف","الفحيحيل"},
-        "منطقة جابر الاحمد": {"مدينة جابر الأحمد","شمال غرب الصليبيخات","الرحاب","صباح الناصر",
-                              "الفردوس","الأندلس","النهضة","غرناطة","الدوحة",
-                              "جنوب الدوحة / القيروان","القيروان"},
-        "منطقة العارضية": {"العارضية حرفية","العارضية","العارضية المنطقة الصناعية",
-                            "الصليبخات","الري","اشبيلية","الرقعي"},
-        "منطقة سلوي": {"مبارك العبدالله غرب مشرف","سلوى","بيان","الرميثية","مشرف"},
-        "منطقة السالمية": {"السالمية","ميدان حولي","البدع"},
-        "منطقة الجهراء": {"الجهراء",
-                          "مدينة سعد العبد الله","أمغرة","سكراب امغرة",
-                          "جنوب امغرة","القصر","النعيم","معسكرات الجهراء","تيماء","النسيم",
-                          "الجهراء المنطقة الصناعية","جواخير الجهراء","العيون","الواحة",
-                          "اسطبلات الجهراء",},
+    # نأخذ النص بعد كود المنتج
+    pattern = re.escape(product_code)
 
-        "منطقة الصلبية": {"الصلبية الصناعية","الصليبية الصناعية","مزارع الصليبية",
-                        "الصليبية السكنية","الصليبية",
-                          "مزارع الطليبية"},
-        "منطقة خيطان": {"خيطان"},
-        "منطقة الفروانية": {"الفروانية"},
-        "منطقه الصباحية": {"اسواق القرين","الظهر","جابر العلي","العقيلة","الرقة","المقوع",
-                           "فهد الأحمد","الصباحية","هدية","الجليعه","علي صباح السالم"},
-        "منطقة صباح الاحمد": {"صباح الأحمد3","الجليعة","صباح الأحمد","مدينة صباح الأحمد",
-                             "ميناء عبد الله","بنيدر","الوفرة","الخيران","الزور","النويصب",
-                             "شمال الأحمدي","جنوب الأحمدي","شرق الأحمدي","وسط الأحمدي",
-                             "الأحمدي","غرب الأحمدي","ام الهيمان","الشعيبة"},
-        "منطقة حولي": {"حولي"},
-        "منطقة الجابرية": {"الجابرية","قرطبة","اليرموك","السرة"},
-        "منطقة العاصمة": {"حدائق السور","دسمان","القبلة","المرقاب","مدينة الكويت","المباركية","شرق‎"},
-        "منطقة الشويخ": {"الشويخ الصناعية","الشويخ","الشويخ السكنية","ميناء الشويخ"},
-        "منطقة الشعب": {"ضاحية عبد الله السالم","الدعية","القادسية","النزهة","الفيحاء","كيفان",
-                        "الشعب","الروضة","الخالدية","العديلية","الدسمة","الشامية","المنصورية","بنيد القار"},
-        
-        "منطقة عبدالله المبارك": {"الشدادية","غرب عبدالله المبارك","عبدالله المبارك",
-        "كبد","الرحاب","الضجيج","الافينيوز","عبدالله مبارك الصباح"},
-        
-        "منطقة جنوب السرة": {"السلام",
-                                 "العمرية","منطقة المطار","حطين","الشهداء","صبحان","الزهراء",
-                                 "الصديق","الرابية","جنوب السرة",},
+    parts = re.split(pattern, text, flags=re.IGNORECASE)
 
-        
-        "جليب الشيوخ": {"جليب الشيوخ","العباسية","شارع محمد بن القاسم","الحساوي"},
-        "المطلاع": {"المطلاع","العبدلي","السكراب"},
-    }
-    for area, cities in city_map.items():
-        if city in cities:
-            return area
-    return "Other City"
+    if len(parts) > 1:
+        name = parts[1].strip()
+    else:
+        name = text.strip()
 
-# ---------- PDF table builder ----------
-def df_to_pdf_table(df, title="Mevven"):
-    if "اجمالي عدد القطع في الطلب" in df.columns:
-        df = df.rename(columns={"اجمالي عدد القطع في الطلب": "عدد القطع"})
+    # حذف الكلمات الخاصة بنسخ الحملات
+    name = re.sub(r'\s*-\s*Copy.*$', '', name, flags=re.IGNORECASE)
+    name = re.sub(r'\s*-\s*\d+.*$', '', name)
+    name = re.sub(r'\bCopy\s*\d*\b', '', name, flags=re.IGNORECASE)
+    name = re.sub(r'\bBID\b', '', name, flags=re.IGNORECASE)
 
-    final_cols = [
-        'كود الاوردر', 'اسم العميل', 'المنطقة', 'العنوان',
-        'المدينة', 'رقم موبايل العميل', 'حالة الاوردر',
-        'عدد القطع', 'الملاحظات', 'اسم الصنف',
-        'اللون', 'المقاس', 'الكمية',
-        'الإجمالي مع الشحن'
+    # حذف التاريخ الموجود غالباً في نهاية اسم الحملة
+    # أمثلة: 8-10 / 8-23 / 6-15
+    name = re.sub(r'\s+\d{1,2}-\d{1,2}.*$', '', name)
+
+    # تنظيف المسافات
+    name = re.sub(r'\s+', ' ', name).strip()
+
+    return name
+
+
+def get_spend_column(df):
+    """
+    تحديد عمود الصرف حسب نوع التقرير
+    """
+
+    possible_columns = [
+        "Amount spent (USD)",
+        "Spend",
+        "Amount spent",
+        "Cost"
     ]
-    df = df[[c for c in final_cols if c in df.columns]].copy()
 
-    if 'رقم موبايل العميل' in df.columns:
-        df['رقم موبايل العميل'] = df['رقم موبايل العميل'].apply(
-            lambda x: str(int(float(x))) if pd.notna(x) and str(x).replace('.','',1).isdigit()
-            else ("" if pd.isna(x) else str(x))
+    for col in possible_columns:
+        if col in df.columns:
+            return col
+
+    return None
+
+
+def get_orders_column(df):
+    """
+    تحديد عمود النتائج / الأوردرات.
+
+    في ملفات Meta:
+    Results
+
+    في الملفات الأخرى الموجودة عندك:
+    Conversions
+    """
+
+    # الأولوية للـ Results لو كانت رقمية فعلاً
+    if "Results" in df.columns:
+
+        test = pd.to_numeric(
+            df["Results"],
+            errors="coerce"
         )
 
-    safe_cols = {'الإجمالي مع الشحن','كود الاوردر','رقم موبايل العميل','اسم العميل',
-                 'المنطقة','العنوان','المدينة','حالة الاوردر','الملاحظات','اسم الصنف','اللون','المقاس'}
-    for col in df.columns:
-        if col not in safe_cols:
-            df[col] = df[col].apply(
-                lambda x: str(int(float(x))) if pd.notna(x) and str(x).replace('.','',1).isdigit()
-                else ("" if pd.isna(x) else str(x))
-            )
+        if test.notna().sum() > 0:
+            return "Results"
 
-    styleN = ParagraphStyle(name='Normal', fontName='Arabic-Bold', fontSize=9,
-                            alignment=1, wordWrap='RTL')
-    styleBH = ParagraphStyle(name='Header', fontName='Arabic-Bold', fontSize=10,
-                             alignment=1, wordWrap='RTL')
-    styleTitle = ParagraphStyle(name='Title', fontName='Arabic-Bold', fontSize=14,
-                                alignment=1, wordWrap='RTL')
+    # في الشيتات اللي رفعتها الأوردرات موجودة هنا
+    if "Conversions" in df.columns:
+        return "Conversions"
 
-    data = []
-    data.append([Paragraph(fix_arabic(col), styleBH) for col in df.columns])
-    for _, row in df.iterrows():
-        data.append([Paragraph(fix_arabic("" if pd.isna(row[col]) else str(row[col])), styleN)
-                     for col in df.columns])
-
-    col_widths_cm = [2, 2, 1.5, 3, 2, 3, 1.5, 1.5, 2.5, 3.5, 1.5, 1.5, 1, 1.5]
-    col_widths = [max(c * 28.35, 15) for c in col_widths_cm]
-
-    tz = pytz.timezone('Africa/Cairo')
-    today = datetime.datetime.now(tz).strftime("%Y-%m-%d")
-    title_text = f"{today} | Mevven | ******"
-
-    elements = [
-        Paragraph(fix_arabic(title_text), styleTitle),
-        Spacer(1, 14)
+    # احتمالات إضافية
+    possible_columns = [
+        "Orders",
+        "Conversions",
+        "Purchases"
     ]
 
-    table = Table(data, colWidths=col_widths[:len(df.columns)], repeatRows=1)
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#E6E6FA")),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
-        ('GRID', (0, 0), (-1, -1), 0.25, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-    ]))
+    for col in possible_columns:
+        if col in df.columns:
+            return col
 
-    elements.append(table)
-    elements.append(PageBreak())
-    return elements
+    return None
 
-# ---------- Streamlit App ----------
-st.set_page_config(page_title="💎 Mevven Orders Processor", layout="wide")
-st.title("💎 Mevven Orders Processor")
-st.markdown("....صباح الفل يا ام لي لي ... ارفعي الملفات علشان تستلمي الشيت")
 
+def process_file(file):
+    """
+    قراءة كل Sheets الموجودة داخل الملف
+    وتحويلها إلى DataFrame موحد
+    """
+
+    all_frames = []
+
+    xls = pd.read_excel(
+        file,
+        sheet_name=None,
+        engine="openpyxl"
+    )
+
+    for sheet_name, df in xls.items():
+
+        df = df.dropna(how="all")
+
+        if df.empty:
+            continue
+
+        all_frames.append(df)
+
+    if not all_frames:
+        return pd.DataFrame()
+
+    return pd.concat(
+        all_frames,
+        ignore_index=True,
+        sort=False
+    )
+
+
+def clean_and_prepare(df, source_file):
+
+    if df.empty:
+        return pd.DataFrame()
+
+    if "Campaign name" not in df.columns:
+        return pd.DataFrame()
+
+    spend_col = get_spend_column(df)
+    orders_col = get_orders_column(df)
+
+    if spend_col is None:
+        return pd.DataFrame()
+
+    # إنشاء DataFrame جديد
+    result = pd.DataFrame()
+
+    result["اسم الحملة"] = df["Campaign name"].astype(str)
+
+    # استخراج كود المنتج
+    result["كود المنتج"] = result["اسم الحملة"].apply(
+        extract_product_code
+    )
+
+    # حذف أي صف ليس فيه كود منتج
+    # وبالتالي صفوف Total of results مش هتدخل
+    result = result[
+        result["كود المنتج"].notna()
+    ].copy()
+
+    # استخراج اسم المنتج
+    result["اسم المنتج"] = result.apply(
+        lambda row: extract_product_name(
+            row["اسم الحملة"],
+            row["كود المنتج"]
+        ),
+        axis=1
+    )
+
+    # تحويل الصرف إلى رقم
+    result["الصرف"] = pd.to_numeric(
+        df.loc[result.index, spend_col],
+        errors="coerce"
+    ).fillna(0)
+
+    # تحويل الأوردرات إلى رقم
+    if orders_col:
+
+        result["الأوردرات"] = pd.to_numeric(
+            df.loc[result.index, orders_col],
+            errors="coerce"
+        ).fillna(0)
+
+    else:
+        result["الأوردرات"] = 0
+
+    # تحديد العملة
+    if "Currency" in df.columns:
+
+        result["العملة"] = (
+            df.loc[result.index, "Currency"]
+            .astype(str)
+            .str.upper()
+            .str.strip()
+        )
+
+    else:
+
+        # لو اسم العمود Amount spent USD
+        if "USD" in spend_col.upper():
+            result["العملة"] = "USD"
+        else:
+            result["العملة"] = ""
+
+    # لو العملة مش موجودة نحاول نحددها من اسم الملف
+    result["العملة"] = result["العملة"].replace(
+        {
+            "NAN": "",
+            "NONE": ""
+        }
+    )
+
+    # إضافة مصدر الملف
+    result["مصدر الملف"] = source_file
+
+    # حذف الحملات اللي صرفها صفر
+    result = result[
+        result["الصرف"] > 0
+    ].copy()
+
+    return result
+
+
+# =========================================================
+# Streamlit App
+# =========================================================
+
+st.set_page_config(
+    page_title="💎 Campaign Product Analyzer",
+    layout="wide"
+)
+
+st.title("💎 Campaign Product Analyzer")
+
+st.markdown("""
+ارفع تقارير الحملات، والبرنامج هيقوم بـ:
+
+- استخراج كود المنتج من اسم الحملة
+- تجميع كل الحملات اللي فيها نفس الكود
+- حذف الحملات اللي صرفها صفر
+- جمع الصرف بالدولار
+- جمع الصرف بالمصري
+- تحويل المصري إلى دولار
+- حساب إجمالي الصرف النهائي بالدولار
+- جمع عدد الأوردرات لكل منتج
+""")
+
+
+# =========================================================
+# Exchange Rate
+# =========================================================
+
+st.subheader("💱 سعر تحويل الدولار")
+
+exchange_rate = st.number_input(
+    "1 USD = كام جنيه مصري؟",
+    min_value=1.0,
+    value=50.0,
+    step=0.5
+)
+
+
+# =========================================================
+# Upload Files
+# =========================================================
 
 uploaded_files = st.file_uploader(
-    "Upload Excel files (.xlsx)",
+    "ارفع ملفات Excel الخاصة بالحملات",
     accept_multiple_files=True,
     type=["xlsx"]
 )
 
+
 if uploaded_files:
-    
-    pdfmetrics.registerFont(TTFont('Arabic', 'Amiri-Regular.ttf'))
-    pdfmetrics.registerFont(TTFont('Arabic-Bold', 'Amiri-Bold.ttf'))
 
-    all_frames = []
+    all_data = []
+
+    # -----------------------------------------------------
+    # قراءة الملفات
+    # -----------------------------------------------------
+
     for file in uploaded_files:
-        xls = pd.read_excel(file, sheet_name=None, engine="openpyxl")
-        for _, df in xls.items():
-            df = df.dropna(how="all")
-            all_frames.append(df)
 
-    if all_frames:
-        merged_df = pd.concat(all_frames, ignore_index=True, sort=False)
-        merged_df = replace_muaaqal_with_confirm_safe(merged_df)
+        try:
 
-        if 'المدينة' in merged_df.columns:
-            merged_df['المدينة'] = merged_df['المدينة'].ffill().fillna('')
-        if 'كود الاوردر' in merged_df.columns:
-            merged_df['كود الاوردر'] = fill_down(merged_df['كود الاوردر'])
-        if 'اسم العميل' in merged_df.columns:
-            merged_df['اسم العميل'] = fill_down(merged_df['اسم العميل'])
+            df = process_file(file)
 
-        if 'المدينة' in merged_df.columns and 'اسم الصنف' in merged_df.columns:
-            prod_present = merged_df['اسم الصنف'].notna() & merged_df['اسم الصنف'].astype(str).str.strip().ne('')
-            city_empty = merged_df['المدينة'].isna() | merged_df['المدينة'].astype(str).str.strip().eq('')
-            mask = prod_present & city_empty
-            if mask.any():
-                city_ffill = merged_df['المدينة'].ffill()
-                merged_df.loc[mask, 'المدينة'] = city_ffill.loc[mask]
+            if df.empty:
+                continue
 
-        merged_df['المنطقة'] = merged_df['المدينة'].apply(classify_city)
-        merged_df['المنطقة'] = pd.Categorical(
-            merged_df['المنطقة'],
-            categories=[c for c in merged_df['المنطقة'].unique() if c != "Other City"] + ["Other City"],
-            ordered=True
+            cleaned_df = clean_and_prepare(
+                df,
+                file.name
+            )
+
+            if not cleaned_df.empty:
+                all_data.append(cleaned_df)
+
+        except Exception as e:
+
+            st.error(
+                f"حصلت مشكلة أثناء قراءة الملف: {file.name}"
+            )
+
+            st.error(str(e))
+
+
+    # =====================================================
+    # لو فيه بيانات
+    # =====================================================
+
+    if all_data:
+
+        final_data = pd.concat(
+            all_data,
+            ignore_index=True,
+            sort=False
         )
 
-        merged_df = merged_df.sort_values(['المنطقة','كود الاوردر'])
 
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(
-            buffer,
-            pagesize=landscape(A4),
-            leftMargin=15, rightMargin=15, topMargin=15, bottomMargin=15
+        # =================================================
+        # توحيد أسماء العملات
+        # =================================================
+
+        final_data["العملة"] = (
+            final_data["العملة"]
+            .astype(str)
+            .str.upper()
+            .str.strip()
         )
-        elements = []
-        for group_name, group_df in merged_df.groupby('المنطقة'):
-            elements.extend(df_to_pdf_table(group_df, title=str(group_name)))
-        doc.build(elements)
-        buffer.seek(0)
 
-        tz = pytz.timezone('Africa/Cairo')
-        today = datetime.datetime.now(tz).strftime("%Y-%m-%d")
-        file_name = f"Mevven - {today}.pdf"
 
-        st.success("✅تم تجهيز ملف PDF ✅")
+        # لو فيه ملف عملته USD من اسم العمود
+        final_data["العملة"] = final_data["العملة"].replace(
+            {
+                "US DOLLAR": "USD",
+                "$": "USD",
+                "EGYPTIAN POUND": "EGP",
+                "LE": "EGP"
+            }
+        )
+
+
+        # =================================================
+        # فصل الصرف بالدولار والمصري
+        # =================================================
+
+        final_data["الصرف بالدولار"] = final_data.apply(
+            lambda row:
+            row["الصرف"]
+            if row["العملة"] == "USD"
+            else 0,
+            axis=1
+        )
+
+
+        final_data["الصرف بالمصري"] = final_data.apply(
+            lambda row:
+            row["الصرف"]
+            if row["العملة"] == "EGP"
+            else 0,
+            axis=1
+        )
+
+
+        # =================================================
+        # تجميع الحملات حسب كود المنتج
+        # =================================================
+
+        summary = (
+            final_data
+            .groupby(
+                "كود المنتج",
+                as_index=False
+            )
+            .agg(
+                **{
+                    "اسم المنتج": (
+                        "اسم المنتج",
+                        lambda x: next(
+                            (
+                                str(v)
+                                for v in x
+                                if pd.notna(v)
+                                and str(v).strip() != ""
+                            ),
+                            ""
+                        )
+                    ),
+
+                    "إجمالي الصرف بالدولار": (
+                        "الصرف بالدولار",
+                        "sum"
+                    ),
+
+                    "إجمالي الصرف بالمصري": (
+                        "الصرف بالمصري",
+                        "sum"
+                    ),
+
+                    "إجمالي الأوردرات": (
+                        "الأوردرات",
+                        "sum"
+                    ),
+
+                    "عدد الحملات": (
+                        "اسم الحملة",
+                        "count"
+                    ),
+
+                    "الحملات": (
+                        "اسم الحملة",
+                        lambda x: " | ".join(
+                            dict.fromkeys(
+                                x.astype(str)
+                            )
+                        )
+                    )
+                }
+            )
+        )
+
+
+        # =================================================
+        # تحويل المصري إلى دولار
+        # =================================================
+
+        summary["الصرف المصري بالدولار"] = (
+            summary["إجمالي الصرف بالمصري"]
+            / exchange_rate
+        )
+
+
+        # =================================================
+        # إجمالي الصرف النهائي بالدولار
+        # =================================================
+
+        summary["إجمالي الصرف بالدولار النهائي"] = (
+            summary["إجمالي الصرف بالدولار"]
+            + summary["الصرف المصري بالدولار"]
+        )
+
+
+        # =================================================
+        # تكلفة الأوردر
+        # =================================================
+
+        summary["تكلفة الأوردر بالدولار"] = (
+            summary["إجمالي الصرف بالدولار النهائي"]
+            / summary["إجمالي الأوردرات"].replace(0, pd.NA)
+        )
+
+
+        # =================================================
+        # ترتيب الأعمدة
+        # =================================================
+
+        summary = summary[
+            [
+                "كود المنتج",
+                "اسم المنتج",
+                "عدد الحملات",
+                "إجمالي الأوردرات",
+                "إجمالي الصرف بالدولار",
+                "إجمالي الصرف بالمصري",
+                "الصرف المصري بالدولار",
+                "إجمالي الصرف بالدولار النهائي",
+                "تكلفة الأوردر بالدولار",
+                "الحملات"
+            ]
+        ]
+
+
+        # =================================================
+        # تقريب الأرقام
+        # =================================================
+
+        numeric_columns = [
+            "إجمالي الأوردرات",
+            "إجمالي الصرف بالدولار",
+            "إجمالي الصرف بالمصري",
+            "الصرف المصري بالدولار",
+            "إجمالي الصرف بالدولار النهائي",
+            "تكلفة الأوردر بالدولار"
+        ]
+
+        for col in numeric_columns:
+
+            if col in summary.columns:
+
+                summary[col] = (
+                    pd.to_numeric(
+                        summary[col],
+                        errors="coerce"
+                    )
+                    .round(2)
+                )
+
+
+        # =================================================
+        # ترتيب حسب أعلى صرف
+        # =================================================
+
+        summary = summary.sort_values(
+            "إجمالي الصرف بالدولار النهائي",
+            ascending=False
+        )
+
+
+        # =================================================
+        # عرض النتائج
+        # =================================================
+
+        st.success(
+            "✅ تم تجميع الحملات والمنتجات بنجاح"
+        )
+
+
+        # -------------------------------------------------
+        # Metrics
+        # -------------------------------------------------
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        col1.metric(
+            "عدد المنتجات",
+            len(summary)
+        )
+
+        col2.metric(
+            "إجمالي الأوردرات",
+            int(
+                summary["إجمالي الأوردرات"].sum()
+            )
+        )
+
+        col3.metric(
+            "إجمالي الصرف بالدولار",
+            f"{summary['إجمالي الصرف بالدولار النهائي'].sum():,.2f} $"
+        )
+
+        col4.metric(
+            "إجمالي الصرف بالمصري",
+            f"{summary['إجمالي الصرف بالمصري'].sum():,.2f} EGP"
+        )
+
+
+        # =================================================
+        # عرض الجدول
+        # =================================================
+
+        st.dataframe(
+            summary,
+            use_container_width=True
+        )
+
+
+        # =================================================
+        # إنشاء ملف Excel
+        # =================================================
+
+        output = io.BytesIO()
+
+        with pd.ExcelWriter(
+            output,
+            engine="openpyxl"
+        ) as writer:
+
+            # Sheet الملخص
+            summary.to_excel(
+                writer,
+                index=False,
+                sheet_name="ملخص المنتجات"
+            )
+
+
+            # Sheet التفاصيل
+            details_columns = [
+                "كود المنتج",
+                "اسم المنتج",
+                "اسم الحملة",
+                "العملة",
+                "الصرف",
+                "الأوردرات",
+                "مصدر الملف"
+            ]
+
+            details = final_data[
+                [
+                    col for col in details_columns
+                    if col in final_data.columns
+                ]
+            ]
+
+            details.to_excel(
+                writer,
+                index=False,
+                sheet_name="تفاصيل الحملات"
+            )
+
+
+            # -------------------------------------------------
+            # تنسيق Excel
+            # -------------------------------------------------
+
+            workbook = writer.book
+
+            for sheet_name in workbook.sheetnames:
+
+                worksheet = workbook[sheet_name]
+
+                # تثبيت الصف الأول
+                worksheet.freeze_panes = "A2"
+
+                # Auto width
+                for column_cells in worksheet.columns:
+
+                    max_length = 0
+                    column_letter = column_cells[0].column_letter
+
+                    for cell in column_cells:
+
+                        try:
+                            cell_length = len(
+                                str(cell.value)
+                            )
+
+                            if cell_length > max_length:
+                                max_length = cell_length
+
+                        except:
+                            pass
+
+                    worksheet.column_dimensions[
+                        column_letter
+                    ].width = min(
+                        max_length + 2,
+                        50
+                    )
+
+
+        output.seek(0)
+
+
+        # =================================================
+        # Download Button
+        # =================================================
+
         st.download_button(
-            label="⬇️⬇️ تحميل ملف PDF",
-            data=buffer.getvalue(),
-            file_name=file_name,
-            mime="application/pdf"
+            label="⬇️ تحميل تقرير المنتجات Excel",
+            data=output.getvalue(),
+            file_name="Campaign_Product_Summary.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
+
+    else:
+
+        st.warning(
+            "⚠️ لم يتم العثور على حملات فيها صرف أكبر من صفر."
+        )
