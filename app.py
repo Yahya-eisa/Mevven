@@ -11,6 +11,7 @@ import re
 def extract_product_code(campaign_name):
     """
     استخراج كود المنتج من اسم الحملة.
+
     مثال:
     KW010102MKIO99 ايربودز لترجمة المحادثات 8-11
     => KW010102MKIO99
@@ -78,13 +79,19 @@ def extract_product_name(campaign_name, product_code):
 
 def get_spend_column(df):
     """
-    تحديد عمود الصرف حسب نوع التقرير
+    تحديد عمود الصرف حسب نوع التقرير.
+
+    يدعم:
+    Meta
+    TikTok
+    Snapchat
     """
 
     possible_columns = [
         "Amount spent (USD)",
         "Spend",
         "Amount spent",
+        "Amount Spent",
         "Cost"
     ]
 
@@ -99,11 +106,17 @@ def get_orders_column(df):
     """
     تحديد عمود النتائج / الأوردرات.
 
-    في ملفات Meta:
+    Meta:
     Results
 
-    في الملفات الأخرى الموجودة عندك:
+    TikTok:
     Conversions
+
+    Snapchat:
+    Purchases
+
+    واحتمالات إضافية:
+    Orders / Purchases / Conversions
     """
 
     # الأولوية للـ Results لو كانت رقمية فعلاً
@@ -117,15 +130,95 @@ def get_orders_column(df):
         if test.notna().sum() > 0:
             return "Results"
 
-    # في الشيتات اللي رفعتها الأوردرات موجودة هنا
+    # TikTok
     if "Conversions" in df.columns:
         return "Conversions"
+
+    # Snapchat
+    if "Purchases" in df.columns:
+        return "Purchases"
 
     # احتمالات إضافية
     possible_columns = [
         "Orders",
-        "Conversions",
+        "Purchases",
+        "Conversions"
+    ]
+
+    for col in possible_columns:
+        if col in df.columns:
+            return col
+
+    return None
+
+
+def detect_platform(df, source_file):
+    """
+    تحديد مصدر الملف:
+    Meta / TikTok / Snapchat
+    """
+
+    columns = set(df.columns)
+
+    # Snapchat
+    snapchat_columns = {
+        "Campaign Name",
+        "Amount Spent",
         "Purchases"
+    }
+
+    if snapchat_columns.intersection(columns):
+        return "Snapchat"
+
+    # Meta
+    if (
+        "Campaign name" in columns
+        and (
+            "Amount spent (USD)" in columns
+            or "Results" in columns
+        )
+    ):
+        return "Meta"
+
+    # TikTok
+    if (
+        "Campaign name" in columns
+        and (
+            "Conversions" in columns
+            or "Spend" in columns
+        )
+    ):
+        return "TikTok"
+
+    # محاولة التحديد من اسم الملف
+    file_name = str(source_file).lower()
+
+    if "snap" in file_name:
+        return "Snapchat"
+
+    if "tiktok" in file_name or "tik tok" in file_name:
+        return "TikTok"
+
+    if "meta" in file_name or "facebook" in file_name:
+        return "Meta"
+
+    return "غير محدد"
+
+
+def get_campaign_column(df):
+    """
+    تحديد اسم عمود الحملة.
+
+    Meta / TikTok:
+    Campaign name
+
+    Snapchat:
+    Campaign Name
+    """
+
+    possible_columns = [
+        "Campaign name",
+        "Campaign Name"
     ]
 
     for col in possible_columns:
@@ -138,7 +231,7 @@ def get_orders_column(df):
 def process_file(file):
     """
     قراءة كل Sheets الموجودة داخل الملف
-    وتحويلها إلى DataFrame موحد
+    وتحويلها إلى DataFrame موحد.
     """
 
     all_frames = []
@@ -173,10 +266,22 @@ def clean_and_prepare(df, source_file):
     if df.empty:
         return pd.DataFrame()
 
-    if "Campaign name" not in df.columns:
+    # تحديد منصة الإعلانات
+    platform = detect_platform(
+        df,
+        source_file
+    )
+
+    # تحديد عمود اسم الحملة
+    campaign_col = get_campaign_column(df)
+
+    if campaign_col is None:
         return pd.DataFrame()
 
+    # تحديد عمود الصرف
     spend_col = get_spend_column(df)
+
+    # تحديد عمود الأوردرات
     orders_col = get_orders_column(df)
 
     if spend_col is None:
@@ -185,11 +290,19 @@ def clean_and_prepare(df, source_file):
     # إنشاء DataFrame جديد
     result = pd.DataFrame()
 
-    result["اسم الحملة"] = df["Campaign name"].astype(str)
+    # اسم الحملة
+    result["اسم الحملة"] = (
+        df[campaign_col]
+        .astype(str)
+    )
 
+    # =====================================================
     # استخراج كود المنتج
-    result["كود المنتج"] = result["اسم الحملة"].apply(
-        extract_product_code
+    # =====================================================
+
+    result["كود المنتج"] = (
+        result["اسم الحملة"]
+        .apply(extract_product_code)
     )
 
     # حذف أي صف ليس فيه كود منتج
@@ -198,7 +311,13 @@ def clean_and_prepare(df, source_file):
         result["كود المنتج"].notna()
     ].copy()
 
+    if result.empty:
+        return pd.DataFrame()
+
+    # =====================================================
     # استخراج اسم المنتج
+    # =====================================================
+
     result["اسم المنتج"] = result.apply(
         lambda row: extract_product_name(
             row["اسم الحملة"],
@@ -207,13 +326,19 @@ def clean_and_prepare(df, source_file):
         axis=1
     )
 
+    # =====================================================
     # تحويل الصرف إلى رقم
+    # =====================================================
+
     result["الصرف"] = pd.to_numeric(
         df.loc[result.index, spend_col],
         errors="coerce"
     ).fillna(0)
 
+    # =====================================================
     # تحويل الأوردرات إلى رقم
+    # =====================================================
+
     if orders_col:
 
         result["الأوردرات"] = pd.to_numeric(
@@ -222,9 +347,13 @@ def clean_and_prepare(df, source_file):
         ).fillna(0)
 
     else:
+
         result["الأوردرات"] = 0
 
+    # =====================================================
     # تحديد العملة
+    # =====================================================
+
     if "Currency" in df.columns:
 
         result["العملة"] = (
@@ -236,24 +365,53 @@ def clean_and_prepare(df, source_file):
 
     else:
 
-        # لو اسم العمود Amount spent USD
-        if "USD" in spend_col.upper():
+        # Snapchat Amount Spent = USD
+        if (
+            "USD" in spend_col.upper()
+            or spend_col == "Amount Spent"
+        ):
             result["العملة"] = "USD"
+
         else:
             result["العملة"] = ""
 
-    # لو العملة مش موجودة نحاول نحددها من اسم الملف
-    result["العملة"] = result["العملة"].replace(
-        {
-            "NAN": "",
-            "NONE": ""
-        }
+    # =====================================================
+    # تنظيف العملة
+    # =====================================================
+
+    result["العملة"] = (
+        result["العملة"]
+        .replace(
+            {
+                "NAN": "",
+                "NONE": "",
+                "US DOLLAR": "USD",
+                "$": "USD",
+                "EGYPTIAN POUND": "EGP",
+                "LE": "EGP"
+            }
+        )
+        .astype(str)
+        .str.upper()
+        .str.strip()
     )
 
+    # =====================================================
     # إضافة مصدر الملف
+    # =====================================================
+
     result["مصدر الملف"] = source_file
 
+    # =====================================================
+    # إضافة منصة الإعلانات
+    # =====================================================
+
+    result["المنصة"] = platform
+
+    # =====================================================
     # حذف الحملات اللي صرفها صفر
+    # =====================================================
+
     result = result[
         result["الصرف"] > 0
     ].copy()
@@ -273,16 +431,24 @@ st.set_page_config(
 st.title("💎 Campaign Product Analyzer")
 
 st.markdown("""
-ارفع تقارير الحملات، والبرنامج هيقوم بـ:
+ارفع تقارير الحملات من:
+
+- Meta
+- TikTok
+- Snapchat
+
+والبرنامج هيقوم بـ:
 
 - استخراج كود المنتج من اسم الحملة
 - تجميع كل الحملات اللي فيها نفس الكود
+- دمج Meta + TikTok + Snapchat
 - حذف الحملات اللي صرفها صفر
 - جمع الصرف بالدولار
 - جمع الصرف بالمصري
 - تحويل المصري إلى دولار
 - حساب إجمالي الصرف النهائي بالدولار
 - جمع عدد الأوردرات لكل منتج
+- توضيح منصة كل حملة
 """)
 
 
@@ -305,7 +471,7 @@ exchange_rate = st.number_input(
 # =========================================================
 
 uploaded_files = st.file_uploader(
-    "ارفع ملفات Excel الخاصة بالحملات",
+    "ارفع ملفات Excel الخاصة بالحملات من Meta / TikTok / Snapchat",
     accept_multiple_files=True,
     type=["xlsx"]
 )
@@ -344,7 +510,6 @@ if uploaded_files:
 
             st.error(str(e))
 
-
     # =====================================================
     # لو فيه بيانات
     # =====================================================
@@ -357,7 +522,6 @@ if uploaded_files:
             sort=False
         )
 
-
         # =================================================
         # توحيد أسماء العملات
         # =================================================
@@ -369,17 +533,17 @@ if uploaded_files:
             .str.strip()
         )
 
-
-        # لو فيه ملف عملته USD من اسم العمود
-        final_data["العملة"] = final_data["العملة"].replace(
-            {
-                "US DOLLAR": "USD",
-                "$": "USD",
-                "EGYPTIAN POUND": "EGP",
-                "LE": "EGP"
-            }
+        final_data["العملة"] = (
+            final_data["العملة"]
+            .replace(
+                {
+                    "US DOLLAR": "USD",
+                    "$": "USD",
+                    "EGYPTIAN POUND": "EGP",
+                    "LE": "EGP"
+                }
+            )
         )
-
 
         # =================================================
         # فصل الصرف بالدولار والمصري
@@ -393,7 +557,6 @@ if uploaded_files:
             axis=1
         )
 
-
         final_data["الصرف بالمصري"] = final_data.apply(
             lambda row:
             row["الصرف"]
@@ -401,7 +564,6 @@ if uploaded_files:
             else 0,
             axis=1
         )
-
 
         # =================================================
         # تجميع الحملات حسب كود المنتج
@@ -455,11 +617,19 @@ if uploaded_files:
                                 x.astype(str)
                             )
                         )
+                    ),
+
+                    "المنصات": (
+                        "المنصة",
+                        lambda x: " | ".join(
+                            dict.fromkeys(
+                                x.astype(str)
+                            )
+                        )
                     )
                 }
             )
         )
-
 
         # =================================================
         # تحويل المصري إلى دولار
@@ -470,7 +640,6 @@ if uploaded_files:
             / exchange_rate
         )
 
-
         # =================================================
         # إجمالي الصرف النهائي بالدولار
         # =================================================
@@ -480,16 +649,17 @@ if uploaded_files:
             + summary["الصرف المصري بالدولار"]
         )
 
-
         # =================================================
         # تكلفة الأوردر
         # =================================================
 
         summary["تكلفة الأوردر بالدولار"] = (
             summary["إجمالي الصرف بالدولار النهائي"]
-            / summary["إجمالي الأوردرات"].replace(0, pd.NA)
+            / summary["إجمالي الأوردرات"].replace(
+                0,
+                pd.NA
+            )
         )
-
 
         # =================================================
         # ترتيب الأعمدة
@@ -506,10 +676,10 @@ if uploaded_files:
                 "الصرف المصري بالدولار",
                 "إجمالي الصرف بالدولار النهائي",
                 "تكلفة الأوردر بالدولار",
+                "المنصات",
                 "الحملات"
             ]
         ]
-
 
         # =================================================
         # تقريب الأرقام
@@ -536,7 +706,6 @@ if uploaded_files:
                     .round(2)
                 )
 
-
         # =================================================
         # ترتيب حسب أعلى صرف
         # =================================================
@@ -546,19 +715,17 @@ if uploaded_files:
             ascending=False
         )
 
-
         # =================================================
         # عرض النتائج
         # =================================================
 
         st.success(
-            "✅ تم تجميع الحملات والمنتجات بنجاح"
+            "✅ تم تجميع حملات Meta + TikTok + Snapchat بنجاح"
         )
 
-
-        # -------------------------------------------------
+        # =================================================
         # Metrics
-        # -------------------------------------------------
+        # =================================================
 
         col1, col2, col3, col4 = st.columns(4)
 
@@ -584,7 +751,6 @@ if uploaded_files:
             f"{summary['إجمالي الصرف بالمصري'].sum():,.2f} EGP"
         )
 
-
         # =================================================
         # عرض الجدول
         # =================================================
@@ -593,7 +759,6 @@ if uploaded_files:
             summary,
             use_container_width=True
         )
-
 
         # =================================================
         # إنشاء ملف Excel
@@ -606,19 +771,25 @@ if uploaded_files:
             engine="openpyxl"
         ) as writer:
 
+            # -------------------------------------------------
             # Sheet الملخص
+            # -------------------------------------------------
+
             summary.to_excel(
                 writer,
                 index=False,
                 sheet_name="ملخص المنتجات"
             )
 
-
+            # -------------------------------------------------
             # Sheet التفاصيل
+            # -------------------------------------------------
+
             details_columns = [
                 "كود المنتج",
                 "اسم المنتج",
                 "اسم الحملة",
+                "المنصة",
                 "العملة",
                 "الصرف",
                 "الأوردرات",
@@ -627,7 +798,8 @@ if uploaded_files:
 
             details = final_data[
                 [
-                    col for col in details_columns
+                    col
+                    for col in details_columns
                     if col in final_data.columns
                 ]
             ]
@@ -638,6 +810,42 @@ if uploaded_files:
                 sheet_name="تفاصيل الحملات"
             )
 
+            # -------------------------------------------------
+            # Sheet منفصلة لكل منصة
+            # -------------------------------------------------
+
+            meta_data = final_data[
+                final_data["المنصة"] == "Meta"
+            ]
+
+            tiktok_data = final_data[
+                final_data["المنصة"] == "TikTok"
+            ]
+
+            snapchat_data = final_data[
+                final_data["المنصة"] == "Snapchat"
+            ]
+
+            if not meta_data.empty:
+                meta_data.to_excel(
+                    writer,
+                    index=False,
+                    sheet_name="Meta"
+                )
+
+            if not tiktok_data.empty:
+                tiktok_data.to_excel(
+                    writer,
+                    index=False,
+                    sheet_name="TikTok"
+                )
+
+            if not snapchat_data.empty:
+                snapchat_data.to_excel(
+                    writer,
+                    index=False,
+                    sheet_name="Snapchat"
+                )
 
             # -------------------------------------------------
             # تنسيق Excel
@@ -656,11 +864,16 @@ if uploaded_files:
                 for column_cells in worksheet.columns:
 
                     max_length = 0
-                    column_letter = column_cells[0].column_letter
+
+                    column_letter = (
+                        column_cells[0]
+                        .column_letter
+                    )
 
                     for cell in column_cells:
 
                         try:
+
                             cell_length = len(
                                 str(cell.value)
                             )
@@ -678,9 +891,7 @@ if uploaded_files:
                         50
                     )
 
-
         output.seek(0)
-
 
         # =================================================
         # Download Button
@@ -692,7 +903,6 @@ if uploaded_files:
             file_name="Campaign_Product_Summary.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-
 
     else:
 
